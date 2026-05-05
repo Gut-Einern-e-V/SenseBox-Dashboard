@@ -1,0 +1,19 @@
+[Unit]
+Description=SenseBox Klimadaten Dashboard
+After=network-online.target graphical.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+WorkingDirectory=/home/pi/SenseBox-Dashboard
+ExecStart=/home/pi/SenseBox-Dashboard/start.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/pi/SenseBox-Dashboard/dashboard.log
+StandardError=append:/home/pi/SenseBox-Dashboard/dashboard.log
+
+[Install]
+WantedBy=graphical.target
