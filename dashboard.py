@@ -16,7 +16,7 @@ import time
 import sys
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 try:
     import requests
@@ -40,11 +40,11 @@ REFRESH_INTERVAL_SEC = 60      # Aktualisierungsintervall in Sekunden
 API_TIMEOUT_SEC = 15           # Timeout für API-Anfragen
 RETRY_DELAY_SEC = 30           # Wartezeit bei Fehler bis nächstem Versuch
 
-# Logos: URLs der Logos (werden beim Start heruntergeladen, falls Pillow verfügbar)
-LOGO_URLS = {
-    "sensebox": "https://sensebox.de/images/sensebox-logo.png",
-    "opensensemap": "https://opensensemap.org/img/osm-logo.png",
-}
+HEADER_LOGO_URLS = [
+    os.getenv(f"SENSEBOX_LOGO_URL_{index}", "").strip()
+    for index in range(1, 4)
+]
+MAX_SENSOR_AGE_DIFF = timedelta(days=1)
 
 # ─────────────────────────────────────────────
 #  Farbschema (Dunkel-Theme, TV-optimiert)
@@ -80,35 +80,35 @@ THRESHOLDS = {
     "mm/h":     (None, None), # Regen
 }
 
-# Sensor-Icons (Unicode) nach bekannten Sensor-Titeln
+# Sensor-Kürzel nach bekannten Sensor-Titeln
 SENSOR_ICONS = {
-    "temperatur":          "🌡",
-    "temperature":         "🌡",
-    "luftfeuchtigkeit":    "💧",
-    "humidity":            "💧",
-    "luftdruck":           "🌬",
-    "air pressure":        "🌬",
-    "pressure":            "🌬",
-    "uv":                  "☀",
-    "uv-intensität":       "☀",
-    "uv intensity":        "☀",
-    "beleuchtungsstärke":  "💡",
-    "illuminance":         "💡",
-    "licht":               "💡",
-    "light":               "💡",
-    "pm2.5":               "🌫",
-    "pm10":                "🌫",
-    "feinstaub":           "🌫",
-    "fine dust":           "🌫",
-    "co2":                 "🍃",
-    "kohlendioxid":        "🍃",
-    "carbon dioxide":      "🍃",
-    "windgeschwindigkeit": "💨",
-    "wind speed":          "💨",
-    "wind":                "💨",
-    "regen":               "🌧",
-    "rain":                "🌧",
-    "niederschlag":        "🌧",
+    "temperatur":          "T",
+    "temperature":         "T",
+    "luftfeuchtigkeit":    "RH",
+    "humidity":            "RH",
+    "luftdruck":           "hPa",
+    "air pressure":        "hPa",
+    "pressure":            "hPa",
+    "uv":                  "UV",
+    "uv-intensität":       "UV",
+    "uv intensity":        "UV",
+    "beleuchtungsstärke":  "Lux",
+    "illuminance":         "Lux",
+    "licht":               "Lux",
+    "light":               "Lux",
+    "pm2.5":               "PM2.5",
+    "pm10":                "PM10",
+    "feinstaub":           "PM",
+    "fine dust":           "PM",
+    "co2":                 "CO₂",
+    "kohlendioxid":        "CO₂",
+    "carbon dioxide":      "CO₂",
+    "windgeschwindigkeit": "Wind",
+    "wind speed":          "Wind",
+    "wind":                "Wind",
+    "regen":               "Regen",
+    "rain":                "Regen",
+    "niederschlag":        "Regen",
 }
 
 # Bekannte Übersetzungen von Englisch → Deutsch
@@ -150,12 +150,22 @@ log = logging.getLogger(__name__)
 #  Hilfsfunktionen
 # ─────────────────────────────────────────────
 def sensor_icon(title: str) -> str:
-    """Gibt ein passendes Emoji für den Sensor-Titel zurück."""
+    """Gibt ein passendes Kürzel für den Sensor-Titel zurück."""
     key = title.lower()
     for k, icon in SENSOR_ICONS.items():
         if k in key:
             return icon
-    return "📊"
+    return "Wert"
+
+
+def parse_timestamp(iso_str: str) -> datetime | None:
+    """Parst einen ISO-Zeitstempel aus der API."""
+    if not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def translate_title(title: str) -> str:
@@ -195,10 +205,10 @@ def value_color(value: str, unit: str) -> str:
 
 def time_ago(iso_str: str) -> str:
     """Gibt eine menschenlesbare Zeitangabe zurück (z.B. 'vor 3 min')."""
-    if not iso_str:
+    ts = parse_timestamp(iso_str)
+    if ts is None:
         return "–"
     try:
-        ts = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         diff = datetime.now(timezone.utc) - ts
         secs = int(diff.total_seconds())
         if secs < 60:
@@ -210,6 +220,37 @@ def time_ago(iso_str: str) -> str:
         return f"vor {secs // 86400} Tagen"
     except Exception:
         return iso_str[:16]
+
+
+def sensor_key(sensor: dict) -> str:
+    """Erzeugt einen stabilen Schlüssel für einen Sensor."""
+    return sensor.get("_id") or f"{sensor.get('title', 'Sensor')}|{sensor.get('unit', '')}"
+
+
+def filter_recent_sensors(sensors: list[dict]) -> list[dict]:
+    """Zeigt nur Sensoren mit Messwerten an, die höchstens 1 Tag älter als der neueste Wert sind."""
+    visible_sensors: list[tuple[dict, datetime]] = []
+    newest_timestamp: datetime | None = None
+
+    for sensor in sensors:
+        last_meas = sensor.get("lastMeasurement") or {}
+        value = last_meas.get("value")
+        created_at = parse_timestamp(last_meas.get("createdAt", ""))
+        if value in (None, "", "–") or created_at is None:
+            continue
+
+        visible_sensors.append((sensor, created_at))
+        if newest_timestamp is None or created_at > newest_timestamp:
+            newest_timestamp = created_at
+
+    if newest_timestamp is None:
+        return []
+
+    cutoff = newest_timestamp - MAX_SENSOR_AGE_DIFF
+    return [
+        sensor for sensor, created_at in visible_sensors
+        if created_at >= cutoff
+    ]
 
 
 def fetch_box_data() -> dict | None:
@@ -250,7 +291,9 @@ class SenseBoxDashboard:
         self.last_update: str = "–"
         self.status: str = "Verbinde …"
         self.status_color: str = COLORS["info"]
-        self._sensor_frames: list = []
+        self._sensor_cards: dict[str, dict[str, tk.Widget]] = {}
+        self._sensor_grid_signature: tuple[str, ...] = ()
+        self._sensor_grid_frame: tk.Frame | None = None
         self._stop_event = threading.Event()
         self._logo_images: dict = {}  # Verhindert Garbage Collection von Tkinter-Bildern
 
@@ -260,7 +303,7 @@ class SenseBoxDashboard:
 
     # ──────── Fenstereinrichtung ────────
     def _setup_window(self):
-        self.root.title("SenseBox Klimadaten | Gut-Einern e.V.")
+        self.root.title("SenseBox Klimadaten Dashboard")
         self.root.configure(bg=COLORS["bg"])
         self.root.attributes("-fullscreen", True)
         self.root.bind("<Escape>", self._on_escape)
@@ -270,9 +313,7 @@ class SenseBoxDashboard:
         # Schriften (fallback-sicher)
         self.font_title   = tkfont.Font(family="DejaVu Sans", size=28, weight="bold")
         self.font_station = tkfont.Font(family="DejaVu Sans", size=16)
-        # Emoji-Schrift mit Fallback (Noto Emoji ist auf Raspberry Pi OS vorinstalliert;
-        # tkinter fällt automatisch auf eine Systemschrift zurück, falls die Schrift fehlt)
-        self.font_icon    = tkfont.Font(family="Noto Emoji", size=36)
+        self.font_icon    = tkfont.Font(family="DejaVu Sans", size=18, weight="bold")
         self.font_sensor  = tkfont.Font(family="DejaVu Sans", size=13, weight="bold")
         self.font_value   = tkfont.Font(family="DejaVu Sans Mono", size=34, weight="bold")
         self.font_unit    = tkfont.Font(family="DejaVu Sans", size=16)
@@ -312,18 +353,16 @@ class SenseBoxDashboard:
         header = tk.Frame(self.main_frame, bg=COLORS["header_bg"], pady=12)
         header.pack(fill="x")
 
-        # Links: Logos (Text-Fallback oder Bild)
-        logo_left = tk.Frame(header, bg=COLORS["header_bg"])
-        logo_left.pack(side="left", padx=20)
-        self._add_logo_left(logo_left)
+        logo_row = tk.Frame(header, bg=COLORS["header_bg"])
+        logo_row.pack(fill="x", padx=20, pady=(0, 8))
+        self._build_logo_row(logo_row)
 
-        # Mitte: Titel
         center_frame = tk.Frame(header, bg=COLORS["header_bg"])
-        center_frame.pack(side="left", expand=True)
+        center_frame.pack(fill="x")
 
         tk.Label(
             center_frame,
-            text="🌍  SenseBox Klimastation",
+            text="SenseBox Klimastation",
             font=self.font_title,
             bg=COLORS["header_bg"],
             fg=COLORS["text_primary"],
@@ -331,66 +370,74 @@ class SenseBoxDashboard:
 
         self.box_name_label = tk.Label(
             center_frame,
-            text="Verbinde mit openSenseMap …",
+            text="Verbinde mit Datenquelle …",
             font=self.font_station,
             bg=COLORS["header_bg"],
             fg=COLORS["text_secondary"],
         )
         self.box_name_label.pack()
 
-        # Rechts: Gut-Einern Logo
-        logo_right = tk.Frame(header, bg=COLORS["header_bg"])
-        logo_right.pack(side="right", padx=20)
-        self._add_logo_right(logo_right)
+    def _build_logo_row(self, parent: tk.Frame):
+        """Zeigt drei konfigurierbare Logo-Slots."""
+        for index, url in enumerate(HEADER_LOGO_URLS, start=1):
+            slot = tk.Frame(parent, bg=COLORS["header_bg"])
+            slot.pack(side="left", padx=6)
+            self._add_logo_slot(slot, index, url)
 
-    def _add_logo_left(self, parent: tk.Frame):
-        """senseBox + openSenseMap Logos (Text-Fallback)."""
-        tk.Label(
-            parent,
-            text="sense",
-            font=tkfont.Font(family="DejaVu Sans", size=18, weight="bold"),
-            bg=COLORS["header_bg"],
-            fg="#00b4d8",
-        ).pack(side="left")
-        tk.Label(
-            parent,
-            text="Box",
-            font=tkfont.Font(family="DejaVu Sans", size=18, weight="bold"),
-            bg=COLORS["header_bg"],
-            fg=COLORS["ok"],
-        ).pack(side="left")
-        tk.Label(
-            parent,
-            text="  ×  openSenseMap",
-            font=tkfont.Font(family="DejaVu Sans", size=13),
-            bg=COLORS["header_bg"],
-            fg=COLORS["text_secondary"],
-        ).pack(side="left")
+    def _add_logo_slot(self, parent: tk.Frame, index: int, url: str):
+        """Zeigt ein Logo per URL oder einen Platzhalter."""
+        image = self._load_logo_image(url) if url else None
+        if image is not None:
+            tk.Label(
+                parent,
+                image=image,
+                bg=COLORS["header_bg"],
+            ).pack()
+            self._logo_images[f"logo_{index}"] = image
+            return
 
-    def _add_logo_right(self, parent: tk.Frame):
-        """Gut-Einern e.V. Logo (Text)."""
         tk.Label(
             parent,
-            text="Gut-Einern",
-            font=tkfont.Font(family="DejaVu Sans", size=15, weight="bold"),
-            bg=COLORS["header_bg"],
-            fg="#4ade80",
-        ).pack()
-        tk.Label(
-            parent,
-            text="e.V. – Bildung & Nachhaltigkeit",
-            font=tkfont.Font(family="DejaVu Sans", size=11),
-            bg=COLORS["header_bg"],
+            text=f"Logo {index}",
+            font=self.font_logo,
+            bg=COLORS["card_bg"],
             fg=COLORS["text_secondary"],
+            width=12,
+            height=2,
+            relief="solid",
+            bd=1,
         ).pack()
 
-    def _build_placeholder(self):
-        """Zeigt Ladeanzeige, bis Daten verfügbar sind."""
+    def _load_logo_image(self, url: str):
+        """Lädt ein Logo von einer URL und skaliert es passend für die Kopfzeile."""
+        if not (PIL_OK and REQUESTS_OK):
+            return None
+
+        try:
+            response = requests.get(url, timeout=API_TIMEOUT_SEC)
+            response.raise_for_status()
+            image = Image.open(io.BytesIO(response.content))
+            image.thumbnail((140, 60))
+            return ImageTk.PhotoImage(image)
+        except Exception as exc:
+            log.warning(f"Logo konnte nicht geladen werden ({url}): {exc}")
+            return None
+
+    def _build_placeholder(self, message: str = "Lade Sensordaten …"):
+        """Zeigt eine Platzhalternachricht, bis Daten verfügbar sind."""
+        if self._sensor_grid_frame and self._sensor_grid_frame.winfo_exists():
+            self._sensor_grid_frame.destroy()
+            self._sensor_grid_frame = None
+            self._sensor_cards.clear()
+            self._sensor_grid_signature = ()
+        if hasattr(self, "placeholder_frame") and self.placeholder_frame.winfo_exists():
+            self.placeholder_frame.destroy()
+
         self.placeholder_frame = tk.Frame(self.content_frame, bg=COLORS["bg"])
         self.placeholder_frame.pack(fill="both", expand=True)
         tk.Label(
             self.placeholder_frame,
-            text="⏳  Lade Sensordaten …",
+            text=message,
             font=tkfont.Font(family="DejaVu Sans", size=22),
             bg=COLORS["bg"],
             fg=COLORS["text_secondary"],
@@ -403,7 +450,7 @@ class SenseBoxDashboard:
         # Links: Status
         self.status_label = tk.Label(
             footer,
-            text="● Verbinde …",
+            text="Verbinde …",
             font=self.font_footer,
             bg=COLORS["footer_bg"],
             fg=COLORS["info"],
@@ -434,10 +481,9 @@ class SenseBoxDashboard:
     # ──────── Sensorkarten ────────
     def _rebuild_sensor_grid(self, sensors: list[dict]):
         """Baut das Sensorenraster neu auf."""
-        # Alte Karten entfernen
-        for frame in self._sensor_frames:
-            frame.destroy()
-        self._sensor_frames.clear()
+        if self._sensor_grid_frame and self._sensor_grid_frame.winfo_exists():
+            self._sensor_grid_frame.destroy()
+        self._sensor_cards.clear()
         if self.placeholder_frame.winfo_exists():
             self.placeholder_frame.destroy()
 
@@ -454,7 +500,7 @@ class SenseBoxDashboard:
 
         grid_frame = tk.Frame(self.content_frame, bg=COLORS["bg"])
         grid_frame.pack(fill="both", expand=True)
-        self._sensor_frames.append(grid_frame)
+        self._sensor_grid_frame = grid_frame
 
         # Grid-Gewichte setzen
         rows = (count + cols - 1) // cols
@@ -468,21 +514,17 @@ class SenseBoxDashboard:
             col = idx % cols
             self._create_sensor_card(grid_frame, sensor, row, col)
 
+        self._sensor_grid_signature = tuple(sensor_key(sensor) for sensor in sensors)
+
     def _create_sensor_card(
         self, parent: tk.Frame, sensor: dict, row: int, col: int
     ):
         """Erstellt eine einzelne Sensorkarte."""
-        title_raw   = sensor.get("title", "Sensor")
-        unit        = sensor.get("unit", "")
-        last_meas   = sensor.get("lastMeasurement") or {}
-        raw_value   = last_meas.get("value", "–")
-        created_at  = last_meas.get("createdAt", "")
-
-        title_de  = translate_title(title_raw)
-        icon      = sensor_icon(title_raw)
-        display_v = format_value(raw_value, unit) if raw_value != "–" else "–"
-        color     = value_color(raw_value, unit)
-        age_str   = time_ago(created_at) if created_at else "Kein Messwert"
+        title_raw = sensor.get("title", "Sensor")
+        unit = sensor.get("unit", "")
+        title_de = translate_title(title_raw)
+        icon = sensor_icon(title_raw)
+        sensor_id = sensor_key(sensor)
 
         # Äußerer Rahmen
         outer = tk.Frame(parent, bg=COLORS["card_border"], padx=1, pady=1)
@@ -495,15 +537,16 @@ class SenseBoxDashboard:
         header_f = tk.Frame(card, bg=COLORS["card_bg"])
         header_f.pack(fill="x")
 
-        tk.Label(
+        icon_label = tk.Label(
             header_f,
             text=icon,
             font=self.font_icon,
             bg=COLORS["card_bg"],
             fg=COLORS["text_primary"],
-        ).pack(side="left", padx=(0, 8))
+        )
+        icon_label.pack(side="left", padx=(0, 8))
 
-        tk.Label(
+        title_label = tk.Label(
             header_f,
             text=title_de,
             font=self.font_sensor,
@@ -511,7 +554,8 @@ class SenseBoxDashboard:
             fg=COLORS["text_secondary"],
             wraplength=200,
             justify="left",
-        ).pack(side="left", anchor="s", pady=(0, 2))
+        )
+        title_label.pack(side="left", anchor="s", pady=(0, 2))
 
         # Trennlinie
         tk.Frame(card, bg=COLORS["card_border"], height=1).pack(fill="x", pady=6)
@@ -520,59 +564,101 @@ class SenseBoxDashboard:
         value_f = tk.Frame(card, bg=COLORS["card_bg"])
         value_f.pack(fill="x", pady=4)
 
-        tk.Label(
+        value_label = tk.Label(
             value_f,
-            text=display_v,
+            text="–",
             font=self.font_value,
             bg=COLORS["card_bg"],
-            fg=color,
-        ).pack(side="left")
+            fg=COLORS["text_value"],
+        )
+        value_label.pack(side="left")
 
-        tk.Label(
+        unit_label = tk.Label(
             value_f,
             text=f" {unit}",
             font=self.font_unit,
             bg=COLORS["card_bg"],
             fg=COLORS["text_secondary"],
             anchor="s",
-        ).pack(side="left", padx=(4, 0), pady=(0, 2))
+        )
+        unit_label.pack(side="left", padx=(4, 0), pady=(0, 2))
 
         # Zeitstempel
-        tk.Label(
+        age_label = tk.Label(
             card,
-            text=f"Messung: {age_str}",
+            text="Messung: –",
             font=self.font_age,
             bg=COLORS["card_bg"],
             fg=COLORS["text_secondary"],
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        age_label.pack(anchor="w", pady=(4, 0))
+
+        self._sensor_cards[sensor_id] = {
+            "icon": icon_label,
+            "title": title_label,
+            "value": value_label,
+            "unit": unit_label,
+            "age": age_label,
+        }
+        self._update_sensor_card(sensor)
+
+    def _update_sensor_card(self, sensor: dict):
+        """Aktualisiert eine bestehende Sensorkarte ohne Neuaufbau."""
+        sensor_widgets = self._sensor_cards.get(sensor_key(sensor))
+        if sensor_widgets is None:
+            return
+
+        title_raw = sensor.get("title", "Sensor")
+        unit = sensor.get("unit", "")
+        last_meas = sensor.get("lastMeasurement") or {}
+        raw_value = last_meas.get("value", "–")
+        created_at = last_meas.get("createdAt", "")
+
+        title_de = translate_title(title_raw)
+        icon = sensor_icon(title_raw)
+        display_v = format_value(raw_value, unit) if raw_value != "–" else "–"
+        color = value_color(raw_value, unit)
+        age_str = time_ago(created_at) if created_at else "–"
+
+        sensor_widgets["icon"].config(text=icon)
+        sensor_widgets["title"].config(text=title_de)
+        sensor_widgets["value"].config(text=display_v, fg=color)
+        sensor_widgets["unit"].config(text=f" {unit}")
+        sensor_widgets["age"].config(text=f"Messung: {age_str}")
 
     # ──────── UI aktualisieren ────────
     def _update_ui(self):
         """Aktualisiert die UI mit neuen Daten (muss im Tkinter-Haupt-Thread laufen)."""
         if self.box_data is None:
-            self._set_status("⚠  Keine Verbindung – Versuche erneut …", COLORS["warning"])
-            self.box_name_label.config(text="openSenseMap nicht erreichbar")
+            self._set_status("Keine Verbindung – versuche erneut …", COLORS["warning"])
+            self.box_name_label.config(text="Datenquelle nicht erreichbar")
             return
 
         name = self.box_data.get("name", "Unbekannte Station")
         location_data = self.box_data.get("currentLocation", {})
         coords = location_data.get("coordinates", [])
         if len(coords) >= 2:
-            loc_str = f"  📍 {coords[1]:.4f}°N, {coords[0]:.4f}°E"
+            loc_str = f" ({coords[1]:.4f}°N, {coords[0]:.4f}°E)"
         else:
             loc_str = ""
 
-        self.box_name_label.config(text=f"📡  {name}{loc_str}")
-        self._set_status("● Verbunden mit openSenseMap", COLORS["ok"])
+        self.box_name_label.config(text=f"{name}{loc_str}")
+        self._set_status("Daten erfolgreich aktualisiert", COLORS["ok"])
         self.update_label.config(
             text=f"Letztes API-Update: {self.last_update}"
         )
 
-        sensors = self.box_data.get("sensors", [])
+        sensors = filter_recent_sensors(self.box_data.get("sensors", []))
         if sensors:
-            self._rebuild_sensor_grid(sensors)
+            signature = tuple(sensor_key(sensor) for sensor in sensors)
+            if signature != self._sensor_grid_signature:
+                self._rebuild_sensor_grid(sensors)
+            else:
+                for sensor in sensors:
+                    self._update_sensor_card(sensor)
         else:
-            self._set_status("⚠  Keine Sensoren gefunden", COLORS["warning"])
+            self._set_status("Keine aktuellen Messwerte gefunden", COLORS["warning"])
+            self._build_placeholder("Keine aktuellen Messwerte")
 
     def _set_status(self, msg: str, color: str):
         self.status_label.config(text=msg, fg=color)
@@ -580,7 +666,7 @@ class SenseBoxDashboard:
     def _tick_clock(self):
         """Aktualisiert die Uhr jede Sekunde."""
         now = datetime.now().strftime("%H:%M:%S Uhr")
-        self.clock_label.config(text=f"🕐  {now}")
+        self.clock_label.config(text=f"Uhrzeit: {now}")
         self.root.after(1000, self._tick_clock)
 
     # ──────── Hintergrund-Thread ────────
