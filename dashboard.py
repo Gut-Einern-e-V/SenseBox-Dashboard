@@ -78,6 +78,7 @@ THRESHOLDS = {
     "µW/cm²":   (None, None), # UV
     "km/h":     (20, 40),     # Wind
     "mm/h":     (None, None), # Regen
+    "dB":       (40, 70),     # Lautstärke
 }
 
 # Sensor-Kürzel nach bekannten Sensor-Titeln
@@ -109,6 +110,11 @@ SENSOR_ICONS = {
     "regen":               "Regen",
     "rain":                "Regen",
     "niederschlag":        "Regen",
+    "lautstärke":          "Ton",
+    "sound":               "Ton",
+    "noise":               "Ton",
+    "decibel":             "Ton",
+    "dezibel":             "Ton",
 }
 
 # Bekannte Übersetzungen von Englisch → Deutsch
@@ -131,7 +137,75 @@ TRANSLATIONS = {
     "Rainfall":              "Niederschlag",
     "Rain":                  "Niederschlag",
     "Niederschlag":          "Niederschlag",
+    "Sound Level":           "Lautstärke",
+    "Noise":                 "Lautstärke",
+    "Decibel":               "Lautstärke",
+    "Value":                 "Messwert",
+    "Measurement":           "Messwert",
 }
+
+SENSOR_COPY = (
+    {
+        "keys": ("temperatur", "temperature"),
+        "units": ("°c",),
+        "title": "Temperatur",
+        "description": "Zeigt, wie warm oder kalt es gerade ist.",
+    },
+    {
+        "keys": ("luftfeuchtigkeit", "humidity"),
+        "units": ("%",),
+        "title": "Luftfeuchtigkeit",
+        "description": "Zeigt, wie feucht die Luft gerade ist.",
+    },
+    {
+        "keys": ("luftdruck", "pressure"),
+        "units": ("hpa",),
+        "title": "Luftdruck",
+        "description": "Zeigt, wie stark die Luft auf uns drückt.",
+    },
+    {
+        "keys": ("uv",),
+        "units": ("µw/cm²",),
+        "title": "UV-Licht",
+        "description": "Zeigt, wie stark die Sonne gerade strahlt.",
+    },
+    {
+        "keys": ("beleuchtungsstärke", "illuminance", "licht", "light", "lux"),
+        "units": ("lx",),
+        "title": "Helligkeit",
+        "description": "Zeigt, wie hell es gerade ist.",
+    },
+    {
+        "keys": ("pm2.5", "pm10", "feinstaub", "fine dust"),
+        "units": ("µg/m³",),
+        "title": "Feinstaub",
+        "description": "Zeigt, wie viele winzige Staubteilchen in der Luft sind.",
+    },
+    {
+        "keys": ("co2", "co₂", "kohlendioxid", "carbon dioxide"),
+        "units": ("ppm",),
+        "title": "Kohlendioxid (CO₂)",
+        "description": "Zeigt, wie viel ausgeatmete Luft in der Luft steckt.",
+    },
+    {
+        "keys": ("windgeschwindigkeit", "wind speed", "wind"),
+        "units": ("km/h",),
+        "title": "Wind",
+        "description": "Zeigt, wie schnell der Wind gerade weht.",
+    },
+    {
+        "keys": ("regen", "rain", "niederschlag", "rainfall"),
+        "units": ("mm/h",),
+        "title": "Regen",
+        "description": "Zeigt, wie stark es gerade regnet.",
+    },
+    {
+        "keys": ("lautstärke", "sound", "noise", "decibel", "dezibel"),
+        "units": ("db",),
+        "title": "Lautstärke",
+        "description": "Zeigt, ob es gerade eher leise oder laut ist.",
+    },
+)
 
 # ─────────────────────────────────────────────
 #  Logging einrichten
@@ -155,7 +229,55 @@ def sensor_icon(title: str) -> str:
     for k, icon in SENSOR_ICONS.items():
         if k in key:
             return icon
-    return "Wert"
+    return "Mess"
+
+
+def normalize_sensor_text(text: str) -> str:
+    """Vereinfacht Sensor-Titel und Einheiten für Vergleiche."""
+    return str(text or "").strip().casefold().replace("₂", "2")
+
+
+def sensor_copy(title: str, unit: str) -> dict[str, str]:
+    """Liefert eine kindgerechte Überschrift und kurze Erklärung für Sensoren."""
+    normalized_title = normalize_sensor_text(title)
+    normalized_unit = normalize_sensor_text(unit)
+
+    for item in SENSOR_COPY:
+        if any(key in normalized_title for key in item["keys"]) or normalized_unit in item["units"]:
+            return {
+                "icon": sensor_icon(item["title"]),
+                "title": item["title"],
+                "description": item["description"],
+            }
+
+    translated_title = translate_title(title)
+    if normalize_sensor_text(translated_title) in {"wert", "value", "measurement", "messwert"}:
+        if unit:
+            for item in SENSOR_COPY:
+                if normalized_unit in item["units"]:
+                    return {
+                        "icon": sensor_icon(item["title"]),
+                        "title": item["title"],
+                        "description": item["description"],
+                    }
+        translated_title = "Messwert"
+
+    return {
+        "icon": sensor_icon(translated_title),
+        "title": translated_title,
+        "description": "Zeigt den neuesten Messwert von diesem Sensor.",
+    }
+
+
+def display_icon_text(icon: str, title: str) -> str:
+    """Vermeidet doppelte Überschriften wie 'Wind Wind'."""
+    normalized_icon = normalize_sensor_text(icon)
+    normalized_title = normalize_sensor_text(title)
+    if not normalized_icon:
+        return ""
+    if len(normalized_icon) > 1 and normalized_icon in normalized_title:
+        return ""
+    return icon
 
 
 def parse_timestamp(iso_str: str) -> datetime | None:
@@ -184,6 +306,31 @@ def format_value(value: str, unit: str) -> str:
         return f"{num:.1f}"
     except (ValueError, TypeError):
         return str(value)
+
+
+def sound_level_text(value: str) -> str:
+    """Übersetzt Dezibel in verständliche Wörter."""
+    try:
+        num = float(value)
+    except (ValueError, TypeError):
+        return str(value)
+
+    if num < 40:
+        return "Leise"
+    if num < 70:
+        return "Mittel"
+    return "Laut"
+
+
+def display_value(value: str, unit: str) -> tuple[str, str]:
+    """Bereitet den Messwert für die Anzeige auf."""
+    if normalize_sensor_text(unit) == "db":
+        if value == "–":
+            return "–", ""
+        return sound_level_text(value), f" ({format_value(value, 'dB')} dB)"
+
+    formatted = format_value(value, unit) if value != "–" else "–"
+    return formatted, f" {unit}" if unit else ""
 
 
 def value_color(value: str, unit: str) -> str:
@@ -522,8 +669,8 @@ class SenseBoxDashboard:
         """Erstellt eine einzelne Sensorkarte."""
         title_raw = sensor.get("title", "Sensor")
         unit = sensor.get("unit", "")
-        title_de = translate_title(title_raw)
-        icon = sensor_icon(title_raw)
+        sensor_text = sensor_copy(title_raw, unit)
+        icon_text = display_icon_text(sensor_text["icon"], sensor_text["title"])
         sensor_id = sensor_key(sensor)
 
         # Äußerer Rahmen
@@ -539,7 +686,7 @@ class SenseBoxDashboard:
 
         icon_label = tk.Label(
             header_f,
-            text=icon,
+            text=icon_text,
             font=self.font_icon,
             bg=COLORS["card_bg"],
             fg=COLORS["text_primary"],
@@ -548,7 +695,7 @@ class SenseBoxDashboard:
 
         title_label = tk.Label(
             header_f,
-            text=title_de,
+            text=sensor_text["title"],
             font=self.font_sensor,
             bg=COLORS["card_bg"],
             fg=COLORS["text_secondary"],
@@ -556,6 +703,17 @@ class SenseBoxDashboard:
             justify="left",
         )
         title_label.pack(side="left", anchor="s", pady=(0, 2))
+
+        description_label = tk.Label(
+            card,
+            text=sensor_text["description"],
+            font=self.font_age,
+            bg=COLORS["card_bg"],
+            fg=COLORS["text_secondary"],
+            wraplength=240,
+            justify="left",
+        )
+        description_label.pack(anchor="w", pady=(6, 0))
 
         # Trennlinie
         tk.Frame(card, bg=COLORS["card_border"], height=1).pack(fill="x", pady=6)
@@ -596,6 +754,7 @@ class SenseBoxDashboard:
         self._sensor_cards[sensor_id] = {
             "icon": icon_label,
             "title": title_label,
+            "description": description_label,
             "value": value_label,
             "unit": unit_label,
             "age": age_label,
@@ -614,16 +773,17 @@ class SenseBoxDashboard:
         raw_value = last_meas.get("value", "–")
         created_at = last_meas.get("createdAt", "")
 
-        title_de = translate_title(title_raw)
-        icon = sensor_icon(title_raw)
-        display_v = format_value(raw_value, unit) if raw_value != "–" else "–"
+        sensor_text = sensor_copy(title_raw, unit)
+        icon_text = display_icon_text(sensor_text["icon"], sensor_text["title"])
+        display_v, display_unit = display_value(raw_value, unit)
         color = value_color(raw_value, unit)
         age_str = time_ago(created_at) if created_at else "–"
 
-        sensor_widgets["icon"].config(text=icon)
-        sensor_widgets["title"].config(text=title_de)
+        sensor_widgets["icon"].config(text=icon_text)
+        sensor_widgets["title"].config(text=sensor_text["title"])
+        sensor_widgets["description"].config(text=sensor_text["description"])
         sensor_widgets["value"].config(text=display_v, fg=color)
-        sensor_widgets["unit"].config(text=f" {unit}")
+        sensor_widgets["unit"].config(text=display_unit)
         sensor_widgets["age"].config(text=f"Messung: {age_str}")
 
     # ──────── UI aktualisieren ────────
