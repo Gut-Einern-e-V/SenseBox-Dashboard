@@ -8,6 +8,9 @@ Type=simple
 User=pi
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=SENSEBOX_LOGO_URL_1=
+Environment=SENSEBOX_LOGO_URL_2=
+Environment=SENSEBOX_LOGO_URL_3=
 WorkingDirectory=/home/pi/SenseBox-Dashboard
 ExecStart=/home/pi/SenseBox-Dashboard/start.sh
 Restart=on-failure
