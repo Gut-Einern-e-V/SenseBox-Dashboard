@@ -31,21 +31,42 @@ Die Sensordaten werden live von der öffentlichen SenseBox-API geladen und auf e
 
 ## 🚀 Installation
 
-### 1. Repository klonen
+### Schnellstart mit install.sh (empfohlen)
+
+```bash
+git clone https://github.com/Gut-Einern-e-V/SenseBox-Dashboard.git
+cd SenseBox-Dashboard
+chmod +x install.sh
+./install.sh
+```
+
+Das interaktive Einrichtungsskript erledigt alles in einem Schritt:
+
+| Schritt | Was passiert |
+|---|---|
+| **Geräteinformationen** | Zeigt IP- und MAC-Adresse des Geräts für 10 Sekunden an |
+| **Systemabhängigkeiten** | Installiert `python3-tk`, `jq`, `curl` u. a. automatisch per `apt-get` |
+| **SenseBox-Auswahl** | Ortet das Gerät per IP-Geolokalisierung und zeigt eine Liste aktiver SenseBoxen in der Nähe (nur Boxen mit Daten der letzten 24 h) |
+| **Logo-Konfiguration** | Bis zu 3 Logos konfigurieren – per Stichwortsuche (CLI), direkter URL oder überspringen |
+| **Autostart** | Richtet einen `systemd`-Service oder einen XDG-Desktop-Eintrag für den automatischen Start beim Hochfahren ein |
+
+### Manuelle Installation (alternativ)
+
+#### 1. Repository klonen
 
 ```bash
 git clone https://github.com/Gut-Einern-e-V/SenseBox-Dashboard.git
 cd SenseBox-Dashboard
 ```
 
-### 2. Systemabhängigkeiten installieren (einmalig)
+#### 2. Systemabhängigkeiten installieren (einmalig)
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3 python3-tk python3-pip python3-venv
 ```
 
-### 3. Dashboard starten
+#### 3. Dashboard starten
 
 ```bash
 chmod +x start.sh
@@ -54,7 +75,7 @@ chmod +x start.sh
 
 Das Skript erstellt automatisch eine virtuelle Python-Umgebung und installiert alle benötigten Pakete.
 
-### 4. Optional: Logos per URL konfigurieren
+#### 4. Optional: Logos per URL konfigurieren
 
 Es gibt drei Logo-Slots in der Kopfzeile. Sie werden über Umgebungsvariablen gesetzt:
 
@@ -137,6 +158,7 @@ sudo systemctl restart sensebox-dashboard
 SenseBox-Dashboard/
 ├── dashboard.py                   # Hauptprogramm (Python/tkinter)
 ├── requirements.txt               # Python-Abhängigkeiten
+├── install.sh                     # Interaktives Einrichtungsskript (empfohlen)
 ├── start.sh                       # Startskript mit venv-Setup
 ├── sensebox-dashboard.service     # systemd-Service-Definition
 └── README.md                      # Diese Datei
